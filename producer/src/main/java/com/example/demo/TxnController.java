@@ -1,61 +1,71 @@
 package com.example.demo;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-
-import org.apache.kafka.clients.producer.ProducerRecord;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Valid;
+import org.springframework.http.MediaType;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/transactions")
 public class TxnController {
 
-    /* ★ 新增：引入 BankClient，注入 DummyBankClient */
     private final BankClient bank;
     private final KafkaTemplate<String, String> kafka;
+    private final ObjectMapper mapper;
 
-    public TxnController(BankClient bank, KafkaTemplate<String, String> kafka) {
+    public TxnController(BankClient bank, KafkaTemplate<String, String> kafka, ObjectMapper mapper) {
         this.bank = bank;
         this.kafka = kafka;
+        this.mapper = mapper;
     }
 
     /* ---------- CREDIT（同步） ---------- */
-    @PostMapping(value = "/credit", consumes = "text/plain")
-    public BankResp credit(@RequestBody String base64) {
-        String payload = decode(base64);
-        BankResp resp  = bank.credit(payload);          // ★ 同步调用虚拟银行
-        publishEvent(resp);                             // ★ 写入事件流
-        return resp;                                    // ★ 返回给客户端
+    @PostMapping(value = "/credit", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public TxnMessage credit(@Valid @RequestBody TxnMessage request) {
+        TxnMessage normalized = ensureType(request, TxnType.CREDIT);
+        TxnMessage settled = bank.credit(normalized);
+        publish(settled);
+        return settled;
     }
 
     /* ---------- DEBIT（同步） ---------- */
-    @PostMapping(value = "/debit", consumes = "text/plain")
-    public BankResp debit(@RequestBody String base64) {
-        String payload = decode(base64);
-        BankResp resp  = bank.debit(payload);
-        publishEvent(resp);
-        return resp;
+    @PostMapping(value = "/debit", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public TxnMessage debit(@Valid @RequestBody TxnMessage request) {
+        TxnMessage normalized = ensureType(request, TxnType.DEBIT);
+        TxnMessage settled = bank.debit(normalized);
+        publish(settled);
+        return settled;
     }
 
-    /* ---------- BATCH（异步） ---------- */
-    @PostMapping(value = "/batch", consumes = "text/plain")
-    public void batch(@RequestBody String base64) {
-        kafka.send(new ProducerRecord<>("batch", base64));
+    /* ---------- BATCH CLOSE（异步） ---------- */
+    @PostMapping(value = "/batch", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public TxnMessage batch(@Valid @RequestBody TxnMessage request) {
+        TxnMessage normalized = ensureType(request, TxnType.BATCH_CLOSE);
+        TxnMessage pending = normalized.status() == TxnStatus.PENDING ? normalized : normalized.withStatus(TxnStatus.PENDING);
+        publish(pending);
+        return pending;
     }
 
     /* ========== 共用工具 ========== */
 
-    private String decode(String b64) {
-        return new String(Base64.getDecoder().decode(b64), StandardCharsets.UTF_8);
+    private void publish(TxnMessage message) {
+        kafka.send(TxnTopics.forType(message.txnType()), message.idempotencyKey(), serialize(message));
     }
 
-    private void publishEvent(BankResp r) {             // ★ 统一写事件
-        String json = """
-            {"txnId":"%s","type":"%s","status":"%s",
-             "amount":%s,"currency":"%s","bankTime":"%s"}
-            """.formatted(r.txnId(), r.type(), r.status(),
-                           r.amount(), r.currency(), r.bankTime());
-        kafka.send(new ProducerRecord<>("payment.events", r.txnId(), json));
+    private TxnMessage ensureType(TxnMessage request, TxnType type) {
+        return request.txnType() == type ? request : request.withType(type);
+    }
+
+    private String serialize(TxnMessage message) {
+        try {
+            return mapper.writeValueAsString(message);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize transaction %s".formatted(message.txnId()), e);
+        }
     }
 }

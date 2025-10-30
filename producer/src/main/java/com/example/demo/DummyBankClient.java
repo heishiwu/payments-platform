@@ -1,6 +1,5 @@
 package com.example.demo;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Random;
 import org.springframework.stereotype.Component;
@@ -14,27 +13,21 @@ public class DummyBankClient implements BankClient {
     private static final Random RND = new Random();
 
     @Override
-    public BankResp credit(String rawJson) {
-        return mockResp("CREDIT");
+    public TxnMessage credit(TxnMessage request) {
+        return mockResp(request.withType(TxnType.CREDIT));
     }
 
     @Override
-    public BankResp debit(String rawJson) {
-        return mockResp("DEBIT");
+    public TxnMessage debit(TxnMessage request) {
+        return mockResp(request.withType(TxnType.DEBIT));
     }
 
     /* ---------- 内部辅助 ---------- */
-    private BankResp mockResp(String type) {
+    private TxnMessage mockResp(TxnMessage message) {
         sleep(10, 30);                         // 模拟网络延迟
         //boolean ok = RND.nextDouble() < 0.95;  // 95 % 成功 / 5 % 失败
         boolean ok = true; // 100%成功
-        return new BankResp(
-                "T-" + System.nanoTime(),      // txnId
-                type,
-                ok ? "SUCCEEDED" : "FAILED",
-                BigDecimal.valueOf(100),
-                "USD",
-                Instant.now());
+        return message.withStatusAndTimestamp(ok ? TxnStatus.SUCCESS : TxnStatus.FAILED, Instant.now());
     }
 
     private static void sleep(int minMs, int maxMs) {
