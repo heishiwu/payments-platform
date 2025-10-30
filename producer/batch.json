@@ -1,0 +1,11 @@
+{
+    "txnId": "BATCH-DEMO-001",
+    "batchId": "BATCH-DEMO-001",
+    "merchantId": "MERCHANT-XYZ",
+    "txnType": "BATCH_CLOSE",
+    "amount": 0,
+    "status": "PENDING",
+    "callbackUrl": "https://merchant.example.com/callback",
+    "timestamp": "2025-10-29T12:00:00Z"
+  }
+  

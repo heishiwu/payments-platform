@@ -1,6 +1,7 @@
 package com.example.demo;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.never;
@@ -14,6 +15,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Optional;
+
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -39,6 +42,9 @@ class TxnControllerTest {
     @MockBean
     private KafkaTemplate<String, String> kafkaTemplate;
 
+    @MockBean
+    private TxnRepository repository;
+
     @Test
     void creditEndpointNormalizesTypePublishesAndReturnsSettlement() throws Exception {
         TxnMessage request = new TxnMessage(
@@ -54,6 +60,7 @@ class TxnControllerTest {
         TxnMessage settled = request.withType(TxnType.CREDIT)
                 .withStatusAndTimestamp(TxnStatus.SUCCESS, Instant.parse("2025-10-29T14:31:00Z"));
 
+        when(repository.find("MERCHANT-1", "TXN-1")).thenReturn(Optional.empty());
         when(bankClient.credit(any())).thenReturn(settled);
 
         mockMvc.perform(post("/transactions/credit")
@@ -65,9 +72,39 @@ class TxnControllerTest {
                 .andExpect(jsonPath("$.txnId").value("TXN-1"));
 
         verify(bankClient).credit(Mockito.argThat(msg -> msg.txnType() == TxnType.CREDIT));
+        verify(repository).find("MERCHANT-1", "TXN-1");
 
         String expectedPayload = mapper.writeValueAsString(settled);
         verify(kafkaTemplate).send(TxnTopics.CREDIT, settled.idempotencyKey(), expectedPayload);
+        verify(repository).upsert(settled);
+    }
+
+    @Test
+    void creditEndpointReturnsCachedResponseWhenDuplicate() throws Exception {
+        TxnMessage request = new TxnMessage(
+                "TXN-dup",
+                null,
+                "MERCHANT-dup",
+                TxnType.CREDIT,
+                new BigDecimal("50.00"),
+                TxnStatus.PENDING,
+                "https://callback.example.com/dup",
+                Instant.parse("2025-10-29T15:00:00Z"));
+
+        TxnMessage existing = request.withStatusAndTimestamp(TxnStatus.SUCCESS, Instant.parse("2025-10-29T15:01:00Z"));
+
+        when(repository.find("MERCHANT-dup", "TXN-dup")).thenReturn(Optional.of(existing));
+
+        mockMvc.perform(post("/transactions/credit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCESS"))
+                .andExpect(jsonPath("$.timestamp").value("2025-10-29T15:01:00Z"));
+
+        verify(bankClient, never()).credit(any());
+        verify(kafkaTemplate, never()).send(any(), any(), any());
+        verify(repository, never()).upsert(any());
     }
 
     @Test
@@ -91,6 +128,8 @@ class TxnControllerTest {
 
         verify(bankClient, never()).credit(any());
         verify(bankClient, never()).debit(any());
+        verify(repository, never()).find(anyString(), anyString());
+        verify(repository, never()).upsert(any());
 
         ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
         verify(kafkaTemplate).send(eq(TxnTopics.BATCH_CLOSE), eq("MERCHANT-2:TXN-2"), payloadCaptor.capture());
@@ -119,6 +158,8 @@ class TxnControllerTest {
         verify(bankClient, never()).credit(any());
         verify(bankClient, never()).debit(any());
         verify(kafkaTemplate, never()).send(any(), any(), any());
+        verify(repository, never()).find(anyString(), anyString());
+        verify(repository, never()).upsert(any());
     }
 }
 
